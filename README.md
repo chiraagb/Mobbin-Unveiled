@@ -7,7 +7,7 @@ A Chrome extension that reveals blurred pro screens on [Mobbin.com](https://mobb
 1. Clone the repo and install dependencies:
 
    ```sh
-   git clone https://github.com/chiraagbhandakkar/mobbin-unveiled
+   git clone https://github.com/chiraagb/mobbin-unveiled
    cd mobbin-unveiled
    npm install
    ```
@@ -29,4 +29,4 @@ Once installed, navigate to any app on Mobbin.com. The extension automatically r
 
 ## Author
 
-[Chirag Bhandakkar](https://github.com/chiraagbhandakkar)
+[Chirag Bhandakkar](https://github.com/chiraagb)
