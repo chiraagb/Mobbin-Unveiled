@@ -5,7 +5,7 @@ function handleModifications() {
 }
 
 function removePromoBanners() {
-  document.querySelectorAll("aside.sticky.z-10.my-32").forEach(el => el.remove());
+  document.querySelectorAll("aside.sticky.z-10.my-32").forEach(el => { el.style.display = "none"; });
 }
 
 function unblurScreenCells() {
@@ -13,7 +13,7 @@ function unblurScreenCells() {
   document.querySelectorAll(".mobile-screen-border-radius.pointer-events-none, .web-screen-border-radius.pointer-events-none").forEach(container => {
     container.classList.remove("pointer-events-none");
     const blurOverlay = container.querySelector('div[class*="backdrop-blur"]');
-    if (blurOverlay) blurOverlay.remove();
+    if (blurOverlay) blurOverlay.style.display = "none";
     const img = container.querySelector("img");
     if (img) upgradeImageSrc(img);
   });
@@ -37,7 +37,7 @@ function unblurFlowCells() {
     link.classList.remove("pointer-events-none");
     link.setAttribute("tabindex", "0");
     const blurOverlay = link.querySelector('div[class*="backdrop-blur"]');
-    if (blurOverlay) blurOverlay.remove();
+    if (blurOverlay) blurOverlay.style.display = "none";
     const img = link.querySelector("img");
     if (img) upgradeImageSrc(img);
   });
@@ -57,7 +57,7 @@ function unblurFlowCells() {
   // Type 3: Wrapper container selector (Tailwind v4 CSS variable class)
   document.querySelectorAll('.w-\\(--screen-width\\)').forEach(container => {
     const blurOverlay = container.querySelector('div.absolute[class*="backdrop-blur"]');
-    if (blurOverlay) blurOverlay.remove();
+    if (blurOverlay) blurOverlay.style.display = "none";
     const link = container.querySelector("a");
     if (link && link.classList.contains("pointer-events-none")) {
       link.classList.remove("pointer-events-none");
