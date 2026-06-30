@@ -10,7 +10,7 @@ function removePromoBanners() {
 
 function unblurScreenCells() {
   // Type 1: CSS-blurred via pointer-events-none + backdrop-blur overlay
-  document.querySelectorAll(".mobile-screen-border-radius.pointer-events-none").forEach(container => {
+  document.querySelectorAll(".mobile-screen-border-radius.pointer-events-none, .web-screen-border-radius.pointer-events-none").forEach(container => {
     container.classList.remove("pointer-events-none");
     const blurOverlay = container.querySelector('div[class*="backdrop-blur"]');
     if (blurOverlay) blurOverlay.remove();
@@ -19,7 +19,7 @@ function unblurScreenCells() {
   });
 
   // Type 2: Resolution-blurred via 15w-only srcset (no CSS overlay)
-  document.querySelectorAll(".mobile-screen-border-radius").forEach(container => {
+  document.querySelectorAll(".mobile-screen-border-radius, .web-screen-border-radius").forEach(container => {
     if (container.classList.contains("pointer-events-none")) return;
     const img = container.querySelector("img");
     if (!img || !img.srcset) return;
@@ -32,6 +32,7 @@ function unblurScreenCells() {
 }
 
 function unblurFlowCells() {
+  // Type 1: CSS-blurred via pointer-events-none + backdrop-blur overlay
   document.querySelectorAll('a[data-sentry-component="FlowCellScreen"].pointer-events-none').forEach(link => {
     link.classList.remove("pointer-events-none");
     link.setAttribute("tabindex", "0");
@@ -41,7 +42,20 @@ function unblurFlowCells() {
     if (img) upgradeImageSrc(img);
   });
 
-  document.querySelectorAll('.w-\\[--screen-width\\]').forEach(container => {
+  // Type 2: Resolution-blurred via 15w-only srcset (no pointer-events-none marker)
+  document.querySelectorAll('a[data-sentry-component="FlowCellScreen"]').forEach(link => {
+    if (link.classList.contains("pointer-events-none")) return;
+    const img = link.querySelector("img");
+    if (!img || !img.srcset) return;
+    const allTiny = img.srcset.split(",").every(entry => {
+      const width = parseInt(entry.trim().split(/\s+/)[1], 10) || 0;
+      return width <= 15;
+    });
+    if (allTiny) upgradeImageSrc(img);
+  });
+
+  // Type 3: Wrapper container selector (Tailwind v4 CSS variable class)
+  document.querySelectorAll('.w-\\(--screen-width\\)').forEach(container => {
     const blurOverlay = container.querySelector('div.absolute[class*="backdrop-blur"]');
     if (blurOverlay) blurOverlay.remove();
     const link = container.querySelector("a");
@@ -82,6 +96,17 @@ function upgradeImageSrc(img) {
     }
   }
 
+  // Secondary: extract UUID from nearest /screens/{uuid} link href
+  const screenLink = img.closest('a[href^="/screens/"]');
+  if (screenLink) {
+    const uuid = screenLink.getAttribute("href").match(/\/screens\/([^/?]+)/)?.[1];
+    if (uuid) {
+      img.src = `https://bytescale.mobbin.com/FW25bBB/image/mobbin.com/prod/content/app_screens/${uuid}.png?f=png&w=1920`;
+      img.srcset = "";
+      return;
+    }
+  }
+
   // Fallback: pick largest entry from srcset (for Type 1 when fiber fails)
   if (!img.srcset) return;
   const entries = img.srcset.split(",").map(s => {
@@ -97,10 +122,21 @@ function upgradeImageSrc(img) {
 window.addEventListener("scroll", handleModifications);
 document.addEventListener("DOMContentLoaded", handleModifications);
 
-const observer = new MutationObserver(() => handleModifications());
+// Retry after page load to catch React components whose fiber tree wasn't ready yet
+setTimeout(handleModifications, 500);
+setTimeout(handleModifications, 1500);
+setTimeout(handleModifications, 3000);
+
+// Debounce MutationObserver so React has time to populate fiber props before we read them
+let debounceTimer;
+const observer = new MutationObserver(() => {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(handleModifications, 300);
+});
 observer.observe(document.body, { childList: true, subtree: true });
 
 window.addEventListener("unload", () => {
   window.removeEventListener("scroll", handleModifications);
+  clearTimeout(debounceTimer);
   observer.disconnect();
 });
