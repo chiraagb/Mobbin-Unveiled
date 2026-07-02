@@ -204,30 +204,46 @@ function upgradeImageSrc(img) {
 // Scheduling
 // =============================================================================
 
+// Debounced, but with a hard cap so a busy page (constant DOM mutations) can't
+// starve the trailing timer: if it's been > MAX_WAIT since the last real run,
+// run now instead of deferring again.
 let handleTimer;
+let lastRun = 0;
+const DEBOUNCE = 120;
+const MAX_WAIT = 350;
 function scheduleHandle() {
+  const now = Date.now();
   clearTimeout(handleTimer);
-  handleTimer = setTimeout(handleModifications, 150);
+  if (now - lastRun >= MAX_WAIT) {
+    lastRun = now;
+    handleModifications();
+  } else {
+    handleTimer = setTimeout(() => { lastRun = Date.now(); handleModifications(); }, DEBOUNCE);
+  }
 }
 
 installNetworkHooks();
-harvestFromScripts();
 handleModifications();
 
 window.addEventListener("scroll", scheduleHandle);
-document.addEventListener("DOMContentLoaded", handleModifications);
+document.addEventListener("DOMContentLoaded", scheduleHandle);
 
-// Retry after load to catch screen data that streams in after first paint.
-setTimeout(handleModifications, 500);
-setTimeout(handleModifications, 1500);
-setTimeout(handleModifications, 3000);
+// Mobbin streams its screen data (the enc -> UUID map source) into the page in
+// chunks after first paint, so poll briefly to apply the unblur as soon as each
+// chunk lands, then back off. Cheap: harvestFromScripts only reads new scripts.
+let ticks = 0;
+const poll = setInterval(() => {
+  handleModifications();
+  if (++ticks >= 40) clearInterval(poll); // ~10s at 250ms
+}, 250);
 
-// Debounced so React/RSC has time to populate the DOM and the map before we act.
+// Catch later dynamic content (infinite scroll, client navigations).
 const observer = new MutationObserver(scheduleHandle);
 observer.observe(document.body, { childList: true, subtree: true });
 
 window.addEventListener("unload", () => {
   window.removeEventListener("scroll", scheduleHandle);
   clearTimeout(handleTimer);
+  clearInterval(poll);
   observer.disconnect();
 });
