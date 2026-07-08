@@ -40,6 +40,32 @@ function harvestPairs(text) {
   return added;
 }
 
+// Locked flow-VIDEO cells expose no `app_screens` sibling, only encrypted URLs,
+// and (unlike images) their <a> has no href, so we can't read the flow id from
+// the DOM. But the grid payload's flow object holds both `"id":"<flowId>"` and
+// the video's `file.mp4?enc=` poster token, so we join poster-enc -> flowId here
+// and later fetch `/flows/<flowId>` for the plaintext first-screen image.
+const encToFlow = Object.create(null);
+function harvestVideoPairs(text) {
+  if (!text || text.indexOf("file.mp4") === -1) return 0;
+  const clean = text.indexOf("\\") === -1 ? text : text.replace(/\\/g, "");
+  let added = 0;
+  const re = /file\.mp4\?enc=([A-Za-z0-9._-]{20,})/g;
+  let m;
+  while ((m = re.exec(clean))) {
+    const enc = m[1];
+    if (encToFlow[enc]) continue;
+    // The flow's own `"id"` is the nearest one preceding the poster token (the
+    // screens array in between uses the `"screenId"` key, so it can't collide).
+    const before = clean.slice(Math.max(0, m.index - 30000), m.index);
+    const ids = before.match(/"id":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/g);
+    if (!ids) continue;
+    encToFlow[enc] = ids[ids.length - 1].slice(6, 42);
+    added++;
+  }
+  return added;
+}
+
 // Parse inline <script> payloads (Next.js streams screen data via __next_f here
 // on the initial full-page load). Each script is scanned once.
 function harvestFromScripts() {
@@ -47,7 +73,7 @@ function harvestFromScripts() {
   document.querySelectorAll("script").forEach(s => {
     if (seenScripts.has(s)) return;
     seenScripts.add(s);
-    if (s.textContent) added += harvestPairs(s.textContent);
+    if (s.textContent) { added += harvestPairs(s.textContent); harvestVideoPairs(s.textContent); }
   });
   return added;
 }
@@ -64,7 +90,8 @@ function installNetworkHooks() {
       return origFetch.apply(this, arguments).then(res => {
         try {
           res.clone().text().then(t => {
-            if (harvestPairs(t) > 0) scheduleHandle();
+            const n = harvestPairs(t) + harvestVideoPairs(t);
+            if (n > 0) scheduleHandle();
           }).catch(() => {});
         } catch (e) { /* opaque response */ }
         return res;
@@ -78,7 +105,7 @@ function installNetworkHooks() {
     XHR.prototype.send = function () {
       this.addEventListener("load", () => {
         try {
-          if (this.responseText && harvestPairs(this.responseText) > 0) scheduleHandle();
+          if (this.responseText && (harvestPairs(this.responseText) + harvestVideoPairs(this.responseText)) > 0) scheduleHandle();
         } catch (e) { /* non-text response */ }
       });
       return origSend.apply(this, arguments);
@@ -95,6 +122,7 @@ function handleModifications() {
   removePromoBanners();
   unblurScreenCells();
   unblurFlowCells();
+  unblurVideoCells();
 }
 
 function removePromoBanners() {
@@ -149,6 +177,68 @@ function unblurFlowCells() {
     }
     const img = container.querySelector("img");
     if (isTinySrcset(img)) upgradeImageSrc(img);
+  });
+}
+
+// =============================================================================
+// Video layer: locked flow-video cells (`FlowCellVideo` -> VideoWrapper) can NOT
+// be unblurred like images. The grid payload ships only encrypted URLs for them
+// (poster + source are both `?enc=...`, sealed to a 15px thumbnail) and, unlike
+// image screens, carries NO plaintext `app_screens/<uuid>` sibling. So there is
+// nothing to reconstruct a clean URL from at the grid level.
+//
+// BUT the flow-detail endpoint does: `GET /flows/<flowId>` (RSC) returns the
+// walkthrough's screens in the open, each as plaintext `app_screens/<uuid>.png`.
+// The first one is the video's first frame, so we paint its full-resolution
+// unsigned URL onto the <video>'s poster. No playback (Mobbin never ships the
+// plaintext .mp4), but the blur is gone and the sharp first frame is shown.
+// =============================================================================
+
+// Cache one in-flight/settled fetch per flowId -> first screen's file UUID (or null).
+const flowFirstScreen = Object.create(null);
+function fetchFlowFirstScreen(flowId) {
+  if (flowFirstScreen[flowId]) return flowFirstScreen[flowId];
+  const p = fetch("/flows/" + flowId, { headers: { RSC: "1" } })
+    .then(r => r.text())
+    .then(t => {
+      const c = t.indexOf("\\") === -1 ? t : t.replace(/\\/g, "");
+      const m = c.match(/app_screens\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
+      return m ? m[1] : null;
+    })
+    .catch(() => null);
+  flowFirstScreen[flowId] = p;
+  return p;
+}
+
+function unblurVideoCells() {
+  document.querySelectorAll('a[data-sentry-component="VideoWrapper"]').forEach(link => {
+    const video = link.querySelector("video");
+    if (!video || video.dataset.mvDone === "1" || video.dataset.mvProbing === "1") return;
+    const poster = video.poster || "";
+    const encM = poster.match(/enc=([A-Za-z0-9._-]{20,})/);
+    if (!encM) return;                                  // no sealed poster -> nothing to do
+    // Locked cells have no href; recover the flow id from the harvested poster
+    // enc -> flowId map. If it isn't harvested yet, a later pass will retry.
+    const flowId = encToFlow[encM[1]] ||
+      ((link.getAttribute("href") || "").match(/\/flows\/([0-9a-f-]{36})/) || [])[1];
+    if (!flowId) return;
+
+    // Unlocked cells also use an enc poster but at full resolution and they play
+    // fine, so probe the poster's natural size and only touch the 15px locked ones.
+    video.dataset.mvProbing = "1";
+    const probe = new Image();
+    probe.onload = () => {
+      if (probe.naturalWidth > 60) { video.dataset.mvDone = "1"; return; } // unlocked, leave it
+      fetchFlowFirstScreen(flowId).then(uuid => {
+        if (uuid) {
+          video.poster = "https://bytescale.mobbin.com/FW25bBB/image/mobbin.com/prod/content/app_screens/" + uuid + ".png?f=png&w=1920";
+          link.classList.remove("pointer-events-none");
+        }
+        video.dataset.mvDone = "1"; // best-effort; don't re-fetch
+      });
+    };
+    probe.onerror = () => { video.dataset.mvDone = "1"; };
+    probe.src = poster;
   });
 }
 
