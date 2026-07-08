@@ -41,10 +41,14 @@ function harvestPairs(text) {
 }
 
 // Locked flow-VIDEO cells expose no `app_screens` sibling, only encrypted URLs,
-// and (unlike images) their <a> has no href, so we can't read the flow id from
-// the DOM. But the grid payload's flow object holds both `"id":"<flowId>"` and
-// the video's `file.mp4?enc=` poster token, so we join poster-enc -> flowId here
-// and later fetch `/flows/<flowId>` for the plaintext first-screen image.
+// and (unlike image screen cells) their <a> has no href, so we can't read the
+// flow id from the DOM. But the grid payload's flow object holds both
+// `"id":"<flowId>"` and the video's `file.mp4?enc=` poster token, so we join
+// poster-enc -> flowId here and later fetch `/flows/<flowId>` for the plaintext
+// first-screen image. The same map/fallback also covers locked flow SCREEN
+// cells rendered by `/api/search/fetch-search-page-flows`: that endpoint never
+// ships a plaintext sibling at all (unlike flow-detail/screen-detail RSC), so
+// harvestSearchFlowPairs below joins its cover-screen enc -> flow id instead.
 const encToFlow = Object.create(null);
 function harvestVideoPairs(text) {
   if (!text || text.indexOf("file.mp4") === -1) return 0;
@@ -63,6 +67,27 @@ function harvestVideoPairs(text) {
     encToFlow[enc] = ids[ids.length - 1].slice(6, 42);
     added++;
   }
+  return added;
+}
+
+// Search-results flow grids (`/api/search/fetch-search-page-flows`) return a
+// JSON `{ value: { data: [ { id, restricted, screens: [...] } ] } }` shape
+// with no plaintext path anywhere, even for locked flows. Join the locked
+// cover screen's enc to its flow id so upgradeImageSrc can fall back to
+// fetchFlowFirstScreen (same trick as the video cells above).
+function harvestSearchFlowPairs(text) {
+  if (!text || text.indexOf('"screenCdnImgSources"') === -1 || text.indexOf('"data"') === -1) return 0;
+  let json;
+  try { json = JSON.parse(text); } catch (e) { return 0; }
+  const flows = json && json.value && json.value.data;
+  if (!Array.isArray(flows)) return 0;
+  let added = 0;
+  flows.forEach(flow => {
+    if (!flow || !flow.restricted || !flow.id || !Array.isArray(flow.screens) || !flow.screens[0]) return;
+    const src = flow.screens[0].screenCdnImgSources && flow.screens[0].screenCdnImgSources.src;
+    const m = src && src.match(/enc=([A-Za-z0-9._-]{20,})/);
+    if (m && !encToFlow[m[1]]) { encToFlow[m[1]] = flow.id; added++; }
+  });
   return added;
 }
 
@@ -90,7 +115,7 @@ function installNetworkHooks() {
       return origFetch.apply(this, arguments).then(res => {
         try {
           res.clone().text().then(t => {
-            const n = harvestPairs(t) + harvestVideoPairs(t);
+            const n = harvestPairs(t) + harvestVideoPairs(t) + harvestSearchFlowPairs(t);
             if (n > 0) scheduleHandle();
           }).catch(() => {});
         } catch (e) { /* opaque response */ }
@@ -105,7 +130,7 @@ function installNetworkHooks() {
     XHR.prototype.send = function () {
       this.addEventListener("load", () => {
         try {
-          if (this.responseText && (harvestPairs(this.responseText) + harvestVideoPairs(this.responseText)) > 0) scheduleHandle();
+          if (this.responseText && (harvestPairs(this.responseText) + harvestVideoPairs(this.responseText) + harvestSearchFlowPairs(this.responseText)) > 0) scheduleHandle();
         } catch (e) { /* non-text response */ }
       });
       return origSend.apply(this, arguments);
@@ -286,7 +311,24 @@ function upgradeImageSrc(img) {
     if (best && best.width > 100) {
       img.src = best.url;
       img.dataset.mvDone = "1";
+      return;
     }
+  }
+
+  // Last resort: this page's own payload never carried a plaintext sibling for
+  // this enc (e.g. /api/search/fetch-search-page-flows) but harvestSearchFlowPairs
+  // mapped it to its flow id, so pull the plaintext first screen from the flow's
+  // own detail page instead.
+  if (enc && encToFlow[enc] && img.dataset.mvProbing !== "1") {
+    img.dataset.mvProbing = "1";
+    fetchFlowFirstScreen(encToFlow[enc]).then(uuid2 => {
+      img.dataset.mvProbing = "";
+      if (uuid2) {
+        img.src = "https://bytescale.mobbin.com/FW25bBB/image/mobbin.com/prod/content/app_screens/" + uuid2 + ".png?f=png&w=1920";
+        img.removeAttribute("srcset");
+        img.dataset.mvDone = "1";
+      }
+    });
   }
 }
 
