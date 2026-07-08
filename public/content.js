@@ -72,9 +72,12 @@ function harvestVideoPairs(text) {
 
 // Search-results flow grids (`/api/search/fetch-search-page-flows`) return a
 // JSON `{ value: { data: [ { id, restricted, screens: [...] } ] } }` shape
-// with no plaintext path anywhere, even for locked flows. Join the locked
-// cover screen's enc to its flow id so upgradeImageSrc can fall back to
-// fetchFlowFirstScreen (same trick as the video cells above).
+// with no plaintext path anywhere, even for locked flows, and each flow's
+// filmstrip renders EVERY screen in `screens[]` as its own tile (not just a
+// single cover). So join every screen's enc to its {flowId, order} - `order`
+// is the stable, endpoint-independent key that lets upgradeImageSrc later
+// pick the matching screen back out of `/flows/<flowId>`'s own plaintext list.
+const encToFlowScreen = Object.create(null);
 function harvestSearchFlowPairs(text) {
   if (!text || text.indexOf('"screenCdnImgSources"') === -1 || text.indexOf('"data"') === -1) return 0;
   let json;
@@ -83,10 +86,15 @@ function harvestSearchFlowPairs(text) {
   if (!Array.isArray(flows)) return 0;
   let added = 0;
   flows.forEach(flow => {
-    if (!flow || !flow.restricted || !flow.id || !Array.isArray(flow.screens) || !flow.screens[0]) return;
-    const src = flow.screens[0].screenCdnImgSources && flow.screens[0].screenCdnImgSources.src;
-    const m = src && src.match(/enc=([A-Za-z0-9._-]{20,})/);
-    if (m && !encToFlow[m[1]]) { encToFlow[m[1]] = flow.id; added++; }
+    if (!flow || !flow.restricted || !flow.id || !Array.isArray(flow.screens)) return;
+    flow.screens.forEach(screen => {
+      const src = screen && screen.screenCdnImgSources && screen.screenCdnImgSources.src;
+      const m = src && src.match(/enc=([A-Za-z0-9._-]{20,})/);
+      if (m && !encToFlowScreen[m[1]] && typeof screen.order === "number") {
+        encToFlowScreen[m[1]] = { flowId: flow.id, order: screen.order };
+        added++;
+      }
+    });
   });
   return added;
 }
@@ -219,20 +227,37 @@ function unblurFlowCells() {
 // plaintext .mp4), but the blur is gone and the sharp first frame is shown.
 // =============================================================================
 
-// Cache one in-flight/settled fetch per flowId -> first screen's file UUID (or null).
-const flowFirstScreen = Object.create(null);
-function fetchFlowFirstScreen(flowId) {
-  if (flowFirstScreen[flowId]) return flowFirstScreen[flowId];
+// Split a flow-detail RSC response into per-screen chunks at each `"order":N`
+// marker (mirrors the search endpoint's own per-screen `order` field) and pull
+// the plaintext app_screens UUID out of each chunk. Returns { "0": uuid, ... }.
+function parseOrderedScreens(text) {
+  const clean = text.indexOf("\\") === -1 ? text : text.replace(/\\/g, "");
+  const map = Object.create(null);
+  const parts = clean.split(/"order":(\d+)/);
+  for (let i = 1; i < parts.length; i += 2) {
+    const order = parts[i];
+    const chunk = parts[i + 1] || "";
+    if (order in map) continue;
+    const m = chunk.match(/app_screens\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
+    if (m) map[order] = m[1];
+  }
+  return map;
+}
+
+// Cache one in-flight/settled fetch per flowId -> { order: fileUuid } map.
+const flowScreensCache = Object.create(null);
+function fetchFlowScreens(flowId) {
+  if (flowScreensCache[flowId]) return flowScreensCache[flowId];
   const p = fetch("/flows/" + flowId, { headers: { RSC: "1" } })
     .then(r => r.text())
-    .then(t => {
-      const c = t.indexOf("\\") === -1 ? t : t.replace(/\\/g, "");
-      const m = c.match(/app_screens\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
-      return m ? m[1] : null;
-    })
-    .catch(() => null);
-  flowFirstScreen[flowId] = p;
+    .then(parseOrderedScreens)
+    .catch(() => ({}));
+  flowScreensCache[flowId] = p;
   return p;
+}
+
+function fetchFlowFirstScreen(flowId) {
+  return fetchFlowScreens(flowId).then(map => map["0"] || null);
 }
 
 function unblurVideoCells() {
@@ -317,12 +342,14 @@ function upgradeImageSrc(img) {
 
   // Last resort: this page's own payload never carried a plaintext sibling for
   // this enc (e.g. /api/search/fetch-search-page-flows) but harvestSearchFlowPairs
-  // mapped it to its flow id, so pull the plaintext first screen from the flow's
-  // own detail page instead.
-  if (enc && encToFlow[enc] && img.dataset.mvProbing !== "1") {
+  // mapped it to its {flowId, order}, so pull that specific screen's plaintext
+  // UUID from the flow's own detail page instead.
+  const screenRef = enc && encToFlowScreen[enc];
+  if (screenRef && img.dataset.mvProbing !== "1") {
     img.dataset.mvProbing = "1";
-    fetchFlowFirstScreen(encToFlow[enc]).then(uuid2 => {
+    fetchFlowScreens(screenRef.flowId).then(map => {
       img.dataset.mvProbing = "";
+      const uuid2 = map[String(screenRef.order)];
       if (uuid2) {
         img.src = "https://bytescale.mobbin.com/FW25bBB/image/mobbin.com/prod/content/app_screens/" + uuid2 + ".png?f=png&w=1920";
         img.removeAttribute("srcset");
