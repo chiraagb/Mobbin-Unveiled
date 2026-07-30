@@ -32,4 +32,6 @@ Once installed, navigate to any app on Mobbin.com. The extension automatically r
 [Chirag Bhandakkar](https://github.com/chiraagb)
 
 ## Buy me a coffee
-[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/chiraagb)
+<a href="https://ko-fi.com/your_kofi_username" target="_blank">
+  <img src="https://storage.ko-fi.com/cdn/kofi6.png?v=6" height="50" alt="Buy Me a Coffee at Ko-fi">
+</a>
