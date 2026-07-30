@@ -30,3 +30,6 @@ Once installed, navigate to any app on Mobbin.com. The extension automatically r
 ## Author
 
 [Chirag Bhandakkar](https://github.com/chiraagb)
+
+## Support this project
+[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/chiraagb)
